@@ -1,0 +1,319 @@
+library(MungeSumstats)
+library(TwoSampleMR)
+library(data.table)
+library(plinkbinr)
+library(ieugwasr)
+library(dplyr)
+library(dbplyr)
+library(tidyverse)
+library(SNPlocs.Hsapiens.dbSNP155.GRCh38)
+library(SNPlocs.Hsapiens.dbSNP155.GRCh37)
+library(VariantAnnotation)
+library(coloc)
+library(gwasglue)
+library(CMplot)
+library(ldscr)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(GWASinspector)
+library(locuscomparer)
+library(locusplotr)
+setwd("~/r/sca")
+#### data source and format ####
+#finn12 3011 cases + 252810 controls, build 38
+#https://www.nature.com/articles/s41586-022-05473-8
+#https://storage.googleapis.com/finngen-public-data-r12/summary_stats/release/finngen_R12_I9_CARDARR.gz
+sca_finn <- fread('finngen_R12_I9_CARDARR.gz',data.table =F)
+sca_finn$N <- 3011+252810
+colnames(sca_finn)[1] <- 'chr'
+colnames(sca_finn)[5] <- 'rsid'
+sca_finn$chr <- as.numeric(sca_finn$chr)
+sca_finn <- sca_finn  |> dplyr::filter(af_alt > 0.01)
+#convert to GRCh37 version
+MungeSumstats::format_sumstats(
+  path = sca_finn,
+  ref_genome = "GRCh38",
+  convert_ref_genome = "GRCh37",
+  dbSNP = 155,
+  allele_flip_check = FALSE, 
+  bi_allelic_filter = FALSE,
+  allele_flip_frq =FALSE,
+  force_new=TRUE, save_format="LDSC",
+  save_path = "C:/Users/bingxun li/Documents/r/sca/sca_finn12.txt")
+sca_finn <- fread('sca_finn12.txt')
+
+# N Ashar et al. https://pmc.ncbi.nlm.nih.gov/articles/PMC6247663/
+# 3939 cases + 25989 con
+#no chr and pos information provided with GWAS summary data
+#http://arkinglab.org/upload/SCA/METAANALYSIS_woHSDS.SUDS_Jun20151.tbl.gz
+sca_ehj <- fread('METAANALYSIS_woHSDS.SUDS_Jun20151.tbl.gz')
+sca_ehj$Allele1<-toupper(sca_ehj$Allele1)
+sca_ehj$Allele2<-toupper(sca_ehj$Allele2)
+sca_ehj$N <- 3939 + 25989
+sca_ehj <- sca_ehj  |> dplyr::filter(Freq1 > 0.01)
+MungeSumstats::format_sumstats(
+  path = sca_ehj,
+  ref_genome ="GRCh38",
+  convert_ref_genome = "GRCh37",
+  dbSNP = 155,
+  allele_flip_check = FALSE, 
+  bi_allelic_filter = FALSE,
+  allele_flip_frq =FALSE,
+  force_new=TRUE,
+  save_path = "C:/Users/bingxun li/Documents/r/sca/sca_ehj.txt")
+sca_ehj <- fread('sca_ehj.txt')
+colnames(sca_ehj)[1] <- 'rsid'
+colnames(sca_ehj)[10] <- 'pval'
+sca_ehj <- fread('annotated_sca_ehj.txt',data.table = F)
+colnames(sca_ehj)[1] <- 'rsid'
+colnames(sca_ehj)[2] <- 'chr'
+colnames(sca_ehj)[3] <- 'pos'
+sca_ehj <- sca_ehj  |> dplyr::filter(FRQ > 0.01)
+write.table(sca_ehj,'sca_ehj.txt',row.names =F,col.names = T,sep = '\t',quote = F)
+
+#TOPMED https://pheweb.org/UKB-TOPMed/download/427.42
+#https://www.nature.com/articles/s41586-021-03205-y
+#GRCh38, 988 cases, 379215 controls
+sca_ukb <- fread('phenocode-427.42.tsv.gz',data.table = F)
+sca_ukb$n <- 988 + 379215
+sca_ukb$rsid <- NA
+colnames(sca_ukb)
+sca_ukb <- sca_ukb  |> dplyr::filter(af > 0.01)
+snps <- SNPlocs.Hsapiens.dbSNP155.GRCh38
+for (i in unique(sca_ukb$chrom)) {
+  my_pos <- sca_ukb$pos[sca_ukb$chrom == i]
+  chr_snps <- snpsBySeqname(snps, as.character(i))
+  idx <- match(my_pos, pos(chr_snps))
+  rsids <- mcols(chr_snps)$RefSNP_id[idx]
+  sca_ukb$rsid[sca_ukb$chrom == i] <- rsids
+  print(paste("Chromosome", as.character(i), "is processed"))
+}
+#0 genome-wide significant variants (P<5e-8)
+MungeSumstats::format_sumstats(
+  path = sca_ukb,
+  ref_genome = "GRCh38",
+  convert_ref_genome = "GRCh37",
+  dbSNP = 155,
+  allele_flip_check = FALSE, 
+  bi_allelic_filter = FALSE,
+  allele_flip_frq =FALSE,
+  force_new=TRUE,
+  save_path = "C:/Users/bingxun li/Documents/r/sca/sca_ukb.txt")
+colnames(sca_ukb)[8] <- 'pval'
+colnames(sca_ukb)[1] <- 'chr'
+write.table(sca_ukb,'sca_ukb.txt',row.names =F,col.names = T,sep = '\t',quote = F)
+
+#VA Million Veteran Program 
+#1,797 European ancestry cases, 446,497 European ancestry controls 
+#GRCh38    
+#https://www.science.org/doi/10.1126/science.adj1182
+#https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/GCST90477001-GCST90478000/GCST90477942/GCST90477942.tsv.gz
+sca_va <- fread('GCST90477942.tsv.gz',data.table = F)
+head(sca_va)
+sca_va$beta <- log(sca_va$odds_ratio)
+sca_va$se=sqrt(((sca_va$beta)^2)/qchisq(sca_va$p_value,1,lower.tail=F))
+sca_va <- sca_va  |> dplyr::filter(effect_allele_frequency > 0.01)
+#0 genome-wide significant variants (P<5e-8)
+MungeSumstats::format_sumstats(
+  path = sca_va,
+  ref_genome = "GRCh38",
+  convert_ref_genome = "GRCh37",
+  dbSNP = 155,
+  allele_flip_check = FALSE, 
+  bi_allelic_filter = FALSE,
+  allele_flip_frq =FALSE,
+  force_new=TRUE,
+  save_path = "C:/Users/bingxun li/Documents/r/sca/sca_va.txt")
+sca_va_clump <- sca_va|> ieugwasr::ld_clump(sca_va, clump_kb = 10000,
+                                            clump_r2 = 0.001, clump_p = 5e-8,
+                                            pop = "EUR",bfile = "C:/Users/bingxun li/Desktop/1kgv3/EUR",
+                                            plink_bin = "C:/Users/bingxun li/AppData/Local/R/win-library/4.5/plinkbinr/bin/plink_Windows.exe")
+#no clump results
+write.table(sca_va,'sca_va.txt',row.names =F,col.names = T,sep = '\t',quote = F)
+
+####SCA meta analysis results####
+SCA=fread('METAANALYSIS2.TBL',data.table = F) 
+colnames(SCA)
+SCA$se <- 1/sqrt(2*SCA$Freq1*(1-SCA$Freq1)*(SCA$Freq1)*(SCA$Weight+(SCA$Zscore)^2))
+SCA$beta <-(SCA$Zscore)*(SCA$se)
+# se and beta were calculated according to reference: PMID: 27019110
+#colnames："rsid"，"beta"，"se"，"eaf"，"effect_allele"，"other_allele"，"pval"，"N"
+SCA = SCA[,c(1:4,8:10,15:17)]
+colnames(SCA) = c("rsid","effect_allele","other_allele","eaf",'N','Z',"pval",'HetPVal',"se","beta")
+SCA$effect_allele <- toupper(SCA$effect_allele)
+SCA$other_allele <- toupper(SCA$other_allele)
+SCA <- SCA  |> dplyr::filter(eaf > 0.01)
+lambda = round(median(SCA$Z^2) / 0.454, 3)
+lambda
+MungeSumstats::format_sumstats(
+  path = SCA,
+  ref_genome = "GRCh38",
+  convert_ref_genome = "GRCh37",
+  dbSNP = 155,
+  allele_flip_check = FALSE, 
+  bi_allelic_filter = FALSE,
+  allele_flip_frq =FALSE,
+  force_new=TRUE,
+  save_path = "~/r/sca/SCA.txt"     
+)
+SCA <- fread('SCA.txt',data.table = F)
+colnames(SCA)
+#rs55730499	
+rs55730499	<- SCA[SCA$CHR == 6 & SCA$BP >= 161005610-5e5  & SCA$BP <= 161005610+5e5 , ] 
+gg_locusplot(
+  df = rs55730499,
+  lead_snp = "rs55730499",
+  rsid = SNP,
+  chrom = CHR,
+  pos = BP,
+  ref = A1,
+  alt = A2,
+  p_value = P,
+  effect = BETA,
+  std_err = SE,
+  plot_genes = TRUE,
+  plot_recombination = TRUE,
+  population = "EUR"
+)
+#rs9644861
+rs9644861	<- SCA[SCA$CHR == 9 & SCA$BP >= 22090935-5e5  & SCA$BP <= 22090935+5e5 , ] 
+gg_locusplot(
+  df = rs9644861,
+  lead_snp = "rs9644861",
+  rsid = SNP,
+  chrom = CHR,
+  pos = BP,
+  ref = A1,
+  alt = A2,
+  p_value = P,
+  effect = BETA,
+  std_err = SE,
+  plot_genes = TRUE,
+  plot_recombination = TRUE,
+  population = "EUR"
+)
+#### smr analysis twas and pwas####
+f<-select(SCA,SNP,A1,A2,FRQ,BETA,SE,P,N)
+colnames(f)<-c("SNP","A1","A2","freq","b","se","p","n")
+write.table(f,"SCA_smr.ma",sep = "\t",row.names = FALSE,quote = FALSE)
+#eqtlgen
+smr_eqtlgen <- fread('blood_eqtl.smr')
+smr_eqtlgen$probeID <- sub("\\..*", "", smr_eqtlgen$probeID )
+smr_eqtlgen$GeneSymbol <- mapIds(org.Hs.eg.db, keys = smr_eqtlgen$probeID, column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+smr_sig <- subset(smr_eqtlgen, p_SMR < 0.05 / nrow(smr_eqtlgen) & p_HEIDI > 0.01)
+smr_eqtlgen <- smr_eqtlgen  |> dplyr::filter(p_HEIDI > 0.01 )#no sig results
+#gtex left ventricular
+smr_gtex_ven <- fread('GTEX_VEN.smr')
+smr_gtex_ven$probeID <- sub("\\..*", "", smr_gtex_ven$probeID )
+smr_gtex_ven$GeneSymbol <- mapIds(org.Hs.eg.db, keys = smr_gtex_ven$probeID, column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+smr_sig <- subset(smr_gtex_ven, p_SMR < 0.05 / nrow(smr_gtex_ven) & p_HEIDI > 0.01)
+smr_gtex_ven <- smr_gtex_ven  |> dplyr::filter(p_HEIDI > 0.01 )#no sig results
+#decode blood pqtl
+decode <- fread('blood_pqtl.smr')
+decode$probeID <- sub("\\..*", "", decode$probeID )
+smr_sig <- subset(decode, p_SMR < 0.05 / nrow(decode) & p_HEIDI > 0.01)
+decode <- decode  |> dplyr::filter(p_HEIDI > 0.01 )#no sig results
+
+
+#### LDSC analysis ####
+#binary traits#
+#SVT, https://api.kpndataregistry.org/api/d/6KmAgf
+#PMID: 38804128
+setwd("~/r/sca/LDSC/SVT_filtered")
+#AVAP
+AVAP <- fread('AVAP_AVRT_EUR_filtered.txt.gz')
+AVAP$rsid <- NA
+snps <- SNPlocs.Hsapiens.dbSNP155.GRCh37
+AVAP <- AVAP %>%
+  separate(MarkerName, into = c("chrom", "pos"), sep = ":", remove = FALSE)
+head(AVAP)
+for (i in unique(AVAP$chrom)) {
+  my_pos <- AVAP$pos[AVAP$chrom == i]
+  chr_snps <- snpsBySeqname(snps, as.character(i))
+  idx <- match(my_pos, pos(chr_snps))
+  rsids <- mcols(chr_snps)$RefSNP_id[idx]
+  AVAP$rsid[AVAP$chrom == i] <- rsids
+  print(paste("Chromosome", as.character(i), "is processed"))
+}
+#AVNRT
+AVNRT <- fread('AVNRT_EUR_filtered.txt.gz')
+AVNRT$rsid <- NA
+snps <- SNPlocs.Hsapiens.dbSNP155.GRCh37
+AVNRT <- AVNRT %>%
+  separate(MarkerName, into = c("chrom", "pos"), sep = ":", remove = FALSE)
+head(AVNRT)
+for (i in unique(AVNRT$chrom)) {
+  my_pos <- AVNRT$pos[AVNRT$chrom == i]
+  chr_snps <- snpsBySeqname(snps, as.character(i))
+  idx <- match(my_pos, pos(chr_snps))
+  rsids <- mcols(chr_snps)$RefSNP_id[idx]
+  AVNRT$rsid[AVNRT$chrom == i] <- rsids
+  print(paste("Chromosome", as.character(i), "is processed"))
+}
+
+#atrial fibrillation 
+
+#brugada syndrome 
+
+#Dilated cardiomyopathy, PMID: 39572784
+#https://api.kpndataregistry.org/api/d/CQyqth
+
+#Hypertrophic Cardiomyopathy, PMID:39966646
+#https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/GCST90435001-GCST90436000/GCST90435254/GCST90435254.tsv.gz
+
+
+
+#heart failure, https://doi.org/10.1038/s41588-024-02064-3
+#https://api.kpndataregistry.org/api/d/6eJqWn
+#any cause HEART FAILURE
+#Non-ischaemic HF
+
+#coronary artery disease, doi: 10.1038/s41588-022-01233-6.
+#https://personal.broadinstitute.org/ryank/Aragam_2022_CARDIoGRAM_CAD_GWAS.zip
+
+# coronary artery calcification, PMID: 37770635
+#https://api.kpndataregistry.org/api/d/Jw7UNh
+
+#type II diabetes
+
+#pulmonary embolism
+
+#aortic dissection, finngene 12 release, 1150 cases + 463106 controls
+#https://www.nature.com/articles/s41586-022-05473-8
+#https://storage.googleapis.com/finngen-public-data-r12/summary_stats/release/finngen_R12_I9_AORTDIS.gz
+
+# glgc lipid traits, https://csg.sph.umich.edu/willer/public/glgc-lipids2021/results/ancestry_specific/
+# https://pubmed.ncbi.nlm.nih.gov/34887591/
+#https://api.kpndataregistry.org/api/d/6eJqWn
+#hdl
+#ldl
+#tg
+#tc
+
+
+#blood glycemic traits
+#fasting glucose
+#
+
+#ECG traits#
+#p wave duration
+#qrs duration
+#qtc interval
+#resting heart rate
+
+#anthropometric traits#
+#bmi
+#height
+#body weight
+#waist
+#hip
+
+#blood pressure#
+#sbp
+#dbp
+#
+
+
+#cardiac ultrasounic/MRI measurment  
+#LVEF
+#
